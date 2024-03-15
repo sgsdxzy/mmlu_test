@@ -1,5 +1,5 @@
 import argparse
-import openai
+import dashscope
 import os
 import numpy as np
 import pandas as pd
@@ -67,9 +67,7 @@ def gen_messages(train_df, subject, k=-1):
 
 def eval(args, subject, model, dev_df, test_df):
     cors = []
-    all_probs = []
     preds = []
-    answers = choices[: test_df.shape[1] - 2]
 
     for i in range(test_df.shape[0]):
         # get prompt and make sure it fits
@@ -85,43 +83,38 @@ def eval(args, subject, model, dev_df, test_df):
 
         label = test_df.iloc[i, test_df.shape[1] - 1]
 
+        time.sleep(0.5)
         while True:
-            try:
-                c = openai.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    max_tokens=1,
-                    logprobs=True,
-                    top_logprobs=10,
-                    temperature=0,
-                )
+            c = dashscope.Generation.call(
+                model=model,
+                messages=messages,
+                max_tokens=1,
+                top_k=1,
+                repetition_penalty=1.0,
+                temperature=0,
+            )
+            if c["status_code"] == 200:
+                pred = c["output"]["text"]
+                if pred not in choices:
+                    print(f"invalid answer: {pred}")
                 break
-            except Exception as e:
-                print(e)
+            else:
+                print(c["status_code"], c["message"])
+                if c["message"] == "Input data may contain inappropriate content.":
+                    pred = "Invalid"
+                    break
                 time.sleep(1)
-                continue
-
-        lprobs = []
-        for ans in answers:
-            try:
-                lprobs.append(c.choices[0].logprobs.top_logprobs[-1][ans])
-            except:
-                lprobs.append(-100)
-        pred = {0: "A", 1: "B", 2: "C", 3: "D"}[np.argmax(lprobs)]
-        probs = softmax(np.array(lprobs))
 
         cor = pred == label
         cors.append(cor)
-        all_probs.append(probs)
         preds.append(pred)
 
     acc = np.mean(cors)
     cors = np.array(cors)
 
-    all_probs = np.array(all_probs)
     print("Average accuracy {:.3f} - {}".format(acc, subject))
 
-    return cors, acc, all_probs, preds
+    return cors, acc, preds
 
 
 def main(args):
@@ -154,14 +147,11 @@ def main(args):
             os.path.join(args.data_dir, "test", subject + "_test.csv"), header=None
         )
 
-        cors, acc, probs, preds = eval(args, subject, model, dev_df, test_df)
+        cors, acc, preds = eval(args, subject, model, dev_df, test_df)
         all_cors.append(cors)
 
         test_df["{}_pred".format(model)] = preds
         test_df["{}_correct".format(model)] = cors
-        for j in range(probs.shape[1]):
-            choice = choices[j]
-            test_df["{}_choice{}_probs".format(model, choice)] = probs[:, j]
         test_df.to_csv(
             os.path.join(
                 args.save_dir, "results_{}".format(model), "{}.csv".format(subject)
